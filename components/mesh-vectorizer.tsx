@@ -16,6 +16,7 @@ import {
   generateDesignerSVG,
   moodToMinDistance,
   moodToSettings,
+  createSmoothedContext, // ★ NEW: import the smoother from lib
 } from "@/lib/mesh-gradient"
 import {
   Download,
@@ -50,22 +51,29 @@ export function MeshVectorizer() {
     const { width, height } = img
     setImageSize({ width, height })
 
-    const offscreen = document.createElement("canvas")
-    offscreen.width = width
-    offscreen.height = height
-    const ctx = offscreen.getContext("2d", { willReadFrequently: true })
-    if (!ctx) { setIsProcessing(false); return }
-    ctx.drawImage(img, 0, 0)
+    // --- BEFORE (raw context):
+    // const offscreen = document.createElement("canvas")
+    // offscreen.width = width
+    // offscreen.height = height
+    // const ctx = offscreen.getContext("2d", { willReadFrequently: true })
+    // if (!ctx) { setIsProcessing(false); return }
+    // ctx.drawImage(img, 0, 0)
+
+    // --- AFTER (smoothed context in one line): ★
+    // Downscale slightly + apply tiny blur to reduce micro-noise → cleaner vectors
+    const ctx = createSmoothedContext(img, { scale: 0.65, blurPx: 1.2 }) // ★
 
     const settings = moodToSettings(currentMood)
     const minDist = moodToMinDistance(currentMood, width, height)
-    let pts = adaptivePoissonSampling(ctx, width, height, minDist, settings)
+
+    // Use the smoothed ctx for every step below: ★
+    let pts = adaptivePoissonSampling(ctx, width, height, minDist, settings) // ★
     pts = addBoundaryPoints(pts, width, height, minDist)
 
-    const newTriangles = triangulate(ctx, pts, width, height)
+    const newTriangles = triangulate(ctx, pts, width, height) // ★
     setTriangles(newTriangles)
 
-    const svg = generateDesignerSVG(newTriangles, width, height, currentMood, ctx)
+    const svg = generateDesignerSVG(newTriangles, width, height, currentMood, ctx) // ★
     setSvgOutput(svg)
     setIsProcessing(false)
   }, [])
