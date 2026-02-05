@@ -6,6 +6,13 @@ body {
   font-family: Arial, Helvetica, sans-serif;
 }
 
+
+.centered {
+  margin-left: auto;
+  margin-right: auto;
+}
+
+
 @layer utilities {
   .text-balance {
     text-wrap: balance;
