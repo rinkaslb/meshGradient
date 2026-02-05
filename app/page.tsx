@@ -3,7 +3,7 @@ import { MeshVectorizer } from "@/components/mesh-vectorizer"
 export default function Page() {
   return (
     <main className="min-h-screen bg-background">
-      <div className="container py-12 px-4">
+      <div className="container py-12 px-4 centered">
         <MeshVectorizer />
       </div>
     </main>
