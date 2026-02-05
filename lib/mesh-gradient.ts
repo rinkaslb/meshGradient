@@ -1,5 +1,3 @@
-// lib/mesh-gradient.ts
-
 // ============ Types ============
 
 export interface Point {
@@ -33,7 +31,7 @@ export interface BaseGradient {
 }
 
 export interface MoodSettings {
-  pathSmoothing: number       // 1-4 Chaikin iterations (min 1 enforced)
+  pathSmoothing: number       // 0-4 Chaikin iterations
   overlapAmount: number       // 1-1.2 shape expansion
   shapeOpacity: number        // 0.6-0.98 shape fill opacity
   adaptiveSensitivity: number // how much variance affects density
@@ -43,69 +41,31 @@ export interface MoodSettings {
   baseGradientOpacity: number // 0-1 base layer strength
 }
 
-// ============ Canvas Preprocessing ============
-// Use this to generate a smoothed, optionally downscaled context from an image/canvas.
-// Pass the returned ctx into analyze/poisson/triangulate/generate functions for cleaner results.
-export function createSmoothedContext(
-  src: HTMLImageElement | HTMLCanvasElement,
-  { scale = 0.6, blurPx = 1.6 }: { scale?: number; blurPx?: number } = {}
-): CanvasRenderingContext2D {
-  const w0 =
-    src instanceof HTMLImageElement
-      ? src.naturalWidth || (src as any).width || 1
-      : (src as HTMLCanvasElement).width
-  const h0 =
-    src instanceof HTMLImageElement
-      ? src.naturalHeight || (src as any).height || 1
-      : (src as HTMLCanvasElement).height
-
-  const w = Math.max(1, Math.round(w0 * scale))
-  const h = Math.max(1, Math.round(h0 * scale))
-
-  const canvas = document.createElement("canvas")
-  canvas.width = w
-  canvas.height = h
-  const ctx = canvas.getContext("2d")!
-  ctx.imageSmoothingQuality = "high"
-  ctx.drawImage(src as HTMLCanvasElement, 0, 0, w, h)
-
-  // Apply a tiny blur to melt micro-noise (Firefox applies filter only to subsequent draws)
-  if ("filter" in ctx) {
-    ;(ctx as any).filter = `blur(${blurPx}px)`
-    ctx.drawImage(canvas, 0, 0)
-    ;(ctx as any).filter = "none"
-  }
-  return ctx
-}
-
 /**
  * Map mood slider (0=Structured, 100=Organic) to internal settings
- * Note: forced pathSmoothing >= 1 and slightly higher overlap for seam-free joins.
  */
 export function moodToSettings(mood: number): MoodSettings {
   const t = mood / 100
   return {
-    pathSmoothing: Math.max(1, Math.floor(t * 4)), // ensure at least 1 iteration
-    overlapAmount: 1.06 + t * 0.12,                // 1.06 -> 1.18
-    shapeOpacity: 0.97 - t * 0.3,                  // 0.97 -> 0.67
-    adaptiveSensitivity: 0.25 + t * 0.45,          // 0.25 -> 0.70
-    minShapeScale: 0.8 + t * 0.4,                  // 0.8  -> 1.2
-    mergeThreshold: 0.15 + t * 0.35,               // 0.15 -> 0.50
-    gradientConsistency: 0.35 + t * 0.55,          // 0.35 -> 0.90
-    baseGradientOpacity: 0.25 + t * 0.55,          // 0.25 -> 0.80
+    pathSmoothing: Math.floor(t * 4),             // 0 -> 4
+    overlapAmount: 1.0 + t * 0.15,                // 1.0 -> 1.15
+    shapeOpacity: 0.97 - t * 0.3,                 // 0.97 -> 0.67
+    adaptiveSensitivity: 0.25 + t * 0.45,         // 0.25 -> 0.70
+    minShapeScale: 0.8 + t * 0.4,                 // 0.8 -> 1.2
+    mergeThreshold: 0.15 + t * 0.35,              // 0.15 -> 0.50
+    gradientConsistency: 0.35 + t * 0.55,         // 0.35 -> 0.90
+    baseGradientOpacity: 0.25 + t * 0.55,         // 0.25 -> 0.80
   }
 }
 
 /**
  * Map mood (0-100) to Poisson disk min distance.
  * Higher mood = larger shapes = bigger spacing.
- * Slightly increased range + pixel floor to avoid micro triangles.
  */
 export function moodToMinDistance(mood: number, width: number, height: number): number {
   const minSize = Math.min(width, height)
-  const factor = 0.04 + (mood / 100) * 0.12 // 3.5% to 14.5% (larger than before)
-  const px = minSize * factor
-  return Math.max(px, 28) // never drop below 24px
+  const factor = 0.025 + (mood / 100) * 0.085 // 2.5% to 11%
+  return minSize * factor
 }
 
 // ============ Color Utilities ============
@@ -135,11 +95,11 @@ function colorDistance(a: RGB, b: RGB): number {
   return Math.sqrt(dr * dr + dg * dg + db * db)
 }
 
-export function getLuminance(c: RGB): number {
+function getLuminance(c: RGB): number {
   return 0.299 * c.r + 0.587 * c.g + 0.114 * c.b
 }
 
-export function blendColors(colors: RGB[]): RGB {
+function blendColors(colors: RGB[]): RGB {
   if (!colors.length) return { r: 0, g: 0, b: 0 }
   const n = colors.length
   return {
@@ -413,24 +373,13 @@ export function triangulate(ctx: CanvasRenderingContext2D, pts: Array<{ x: numbe
       centroid, area, colorVariance: variance,
     })
   }
-
-  return filterSmallTriangles(result)
-}
-
-// Cull micro triangles to reduce speckles
-function filterSmallTriangles(tris: Triangle[]): Triangle[] {
-  if (!tris.length) return tris
-  const areas = tris.map(t => t.area).sort((a, b) => a - b)
-  const median = areas[Math.floor(areas.length / 2)] || 1
-  const cut = median * 0.36 // keep triangles >= 28% of median area
-  return tris.filter(t => t.area >= cut)
+  return result
 }
 
 // ============ Shape Classification ============
 
 /**
  * Classify triangles into primary (smooth-gradient areas) and detail (high-contrast areas).
- * Slightly stricter criteria reduce pepper in the primary layer.
  */
 function classifyShapes(tris: Triangle[], threshold: number): { primary: Triangle[]; detail: Triangle[] } {
   const avgArea = tris.reduce((s, t) => s + t.area, 0) / tris.length
@@ -471,6 +420,7 @@ function classifyShapes(tris: Triangle[], threshold: number): { primary: Triangl
   for (let i = 0; i < tris.length; i++) {
     const t = tris[i]
     const nb = neighbors.get(i) || []
+    // Count how many neighbors have similar average color
     const avgC = blendColors(t.points.map(p => parseRGB(p.color)))
     let similarCount = 0
     for (const ni of nb) {
@@ -478,8 +428,7 @@ function classifyShapes(tris: Triangle[], threshold: number): { primary: Triangl
       if (colorDistance(avgC, nAvg) / 441.67 < threshold) similarCount++ // 441.67 = max RGB distance
     }
 
-    // Stricter: require a bit larger area and at least 2 similar neighbors
-    if (t.area >= avgArea * 0.55 && similarCount >= 2) {
+    if (t.area >= avgArea * 0.4 && similarCount >= 1) {
       primary.push(t)
     } else {
       detail.push(t)
@@ -549,32 +498,26 @@ function trianglePath(tri: Triangle, settings: MoodSettings): string {
   return bezierPath(chaikinSmooth(base, settings.pathSmoothing))
 }
 
-// ============ SVG Gradient Definitions ============
+// ============ SVG Generation ============
 
 function baseGradientDef(bg: BaseGradient, w: number, h: number): string {
   const { colors, direction: dir } = bg
-
   // Project samples along gradient direction, pick 5 evenly-spaced stops
   const sorted = [...colors].sort((a, b) => {
     return (a.position.x * dir.x2 + a.position.y * dir.y2) - (b.position.x * dir.x2 + b.position.y * dir.y2)
   })
   const count = Math.min(sorted.length, 5)
-  const step = Math.max(1, Math.floor(sorted.length / count))
+  const step = Math.floor(sorted.length / count)
   const stops = Array.from({ length: count }, (_, i) => {
     const idx = Math.min(i * step, sorted.length - 1)
     return { offset: i / (count - 1), hex: rgbObjToHex(sorted[idx].color) }
   })
 
-  // Convert normalized direction to absolute coords
-  const x1 = dir.x1 * w, y1 = dir.y1 * h, x2 = dir.x2 * w, y2 = dir.y2 * h
-
-  return `<linearGradient id="base-gradient" gradientUnits="userSpaceOnUse" x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" spreadMethod="pad">
+  return `<linearGradient id="base-gradient" x1="${(dir.x1 * 100).toFixed(1)}%" y1="${(dir.y1 * 100).toFixed(1)}%" x2="${(dir.x2 * 100).toFixed(1)}%" y2="${(dir.y2 * 100).toFixed(1)}%">
       ${stops.map(s => `<stop offset="${(s.offset * 100).toFixed(1)}%" stop-color="${s.hex}" />`).join("\n      ")}
     </linearGradient>`
 }
-``
 
-// Linear gradient (kept for detail shapes)
 function shapeGradientDef(
   tri: Triangle,
   id: string,
@@ -584,6 +527,7 @@ function shapeGradientDef(
   w?: number,
   h?: number
 ): string {
+  // Collect color stops: 3 vertices + centroid sample
   const colors: Array<{ x: number; y: number; hex: string }> = tri.points.map(p => ({
     x: p.x, y: p.y, hex: rgbToHex(p.color),
   }))
@@ -595,63 +539,29 @@ function shapeGradientDef(
     colors.push({ x: cx, y: cy, hex: rgbObjToHex(c) })
   }
 
-  // Sort stops along global direction
+  // Blend local direction with global direction for visual consistency
   colors.sort((a, b) => (a.x * gDir.dx + a.y * gDir.dy) - (b.x * gDir.dx + b.y * gDir.dy))
 
-  // Build absolute start/end points along that direction across the triangle bbox
-  const minX = Math.min(...tri.points.map(p => p.x))
-  const maxX = Math.max(...tri.points.map(p => p.x))
-  const minY = Math.min(...tri.points.map(p => p.y))
-  const maxY = Math.max(...tri.points.map(p => p.y))
-  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2
-  const halfDiag = Math.hypot(maxX - minX, maxY - minY) * 0.6
-  const x1 = cx - gDir.dx * halfDiag * consistency
-  const y1 = cy - gDir.dy * halfDiag * consistency
-  const x2 = cx + gDir.dx * halfDiag * consistency
-  const y2 = cy + gDir.dy * halfDiag * consistency
+  const x1 = (50 - gDir.dx * 50 * consistency).toFixed(1)
+  const y1 = (50 - gDir.dy * 50 * consistency).toFixed(1)
+  const x2 = (50 + gDir.dx * 50 * consistency).toFixed(1)
+  const y2 = (50 + gDir.dy * 50 * consistency).toFixed(1)
 
   const stops = colors.map((c, i) => {
     const offset = (i / (colors.length - 1)) * 100
     return `<stop offset="${offset.toFixed(1)}%" stop-color="${c.hex}" />`
   }).join("\n        ")
 
-  return `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" spreadMethod="pad">
+  return `<linearGradient id="${id}" x1="${x1}%" y1="${y1}%" x2="${x2}%" y2="${y2}%">
         ${stops}
       </linearGradient>`
-}
-
-// Radial gradient for primary shapes (smoother, less faceted)
-function shapeRadialDef(
-  tri: Triangle,
-  id: string,
-  ctx?: CanvasRenderingContext2D,
-  w?: number,
-  h?: number
-): string {
-  const cx = tri.centroid.x, cy = tri.centroid.y
-  const r = 1.2 * Math.max(...tri.points.map(p => Math.hypot(p.x - cx, p.y - cy))) // a bit larger than triangle
-
-  const centerRGB = ctx && w && h
-    ? sampleRGB(ctx, clamp(cx, 0, w - 1), clamp(cy, 0, h - 1))
-    : blendColors(tri.points.map(p => parseRGB(p.color)))
-  const edgeRGB = blendColors(tri.points.map(p => parseRGB(p.color)))
-
-  const cHex = rgbObjToHex(centerRGB)
-  const eHex = rgbObjToHex(edgeRGB)
-
-  return `
-    <radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${r.toFixed(2)}" spreadMethod="pad">
-      <stop offset="0%" stop-color="${cHex}" />
-      <stop offset="100%" stop-color="${eHex}" />
-    </radialGradient>
-  `
 }
 
 /**
  * Generate the final designer-quality SVG with 3 organized layers:
  *   1. Base Gradient Layer
- *   2. Primary Shapes (radial fills)
- *   3. Detail Shapes (linear fills)
+ *   2. Primary Shapes (smooth areas, lower opacity)
+ *   3. Detail Shapes (high-contrast areas, slightly more opaque)
  */
 export function generateDesignerSVG(
   tris: Triangle[],
@@ -671,16 +581,16 @@ export function generateDesignerSVG(
     baseDef = baseGradientDef(bg, w, h)
   }
 
-  // Primary (radial)
+  // Primary shapes
   const pGrads: string[] = []
   const pPaths: string[] = []
   primary.forEach((tri, i) => {
     const id = `pg-${i}`
-    pGrads.push(shapeRadialDef(tri, id, ctx, w, h))
+    pGrads.push(shapeGradientDef(tri, id, gDir, settings.gradientConsistency, ctx, w, h))
     pPaths.push(`<path d="${trianglePath(tri, settings)}" fill="url(#${id})" opacity="${settings.shapeOpacity.toFixed(2)}" />`)
   })
 
-  // Detail (linear)
+  // Detail shapes (slightly more transparent)
   const dGrads: string[] = []
   const dPaths: string[] = []
   detail.forEach((tri, i) => {
