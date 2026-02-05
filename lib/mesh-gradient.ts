@@ -48,7 +48,7 @@ export interface MoodSettings {
 // Pass the returned ctx into analyze/poisson/triangulate/generate functions for cleaner results.
 export function createSmoothedContext(
   src: HTMLImageElement | HTMLCanvasElement,
-  { scale = 0.65, blurPx = 1.2 }: { scale?: number; blurPx?: number } = {}
+  { scale = 0.6, blurPx = 1.6 }: { scale?: number; blurPx?: number } = {}
 ): CanvasRenderingContext2D {
   const w0 =
     src instanceof HTMLImageElement
@@ -103,9 +103,9 @@ export function moodToSettings(mood: number): MoodSettings {
  */
 export function moodToMinDistance(mood: number, width: number, height: number): number {
   const minSize = Math.min(width, height)
-  const factor = 0.035 + (mood / 100) * 0.11 // 3.5% to 14.5% (larger than before)
+  const factor = 0.04 + (mood / 100) * 0.12 // 3.5% to 14.5% (larger than before)
   const px = minSize * factor
-  return Math.max(px, 24) // never drop below 24px
+  return Math.max(px, 28) // never drop below 24px
 }
 
 // ============ Color Utilities ============
@@ -422,7 +422,7 @@ function filterSmallTriangles(tris: Triangle[]): Triangle[] {
   if (!tris.length) return tris
   const areas = tris.map(t => t.area).sort((a, b) => a - b)
   const median = areas[Math.floor(areas.length / 2)] || 1
-  const cut = median * 0.28 // keep triangles >= 28% of median area
+  const cut = median * 0.36 // keep triangles >= 28% of median area
   return tris.filter(t => t.area >= cut)
 }
 
@@ -553,21 +553,26 @@ function trianglePath(tri: Triangle, settings: MoodSettings): string {
 
 function baseGradientDef(bg: BaseGradient, w: number, h: number): string {
   const { colors, direction: dir } = bg
+
   // Project samples along gradient direction, pick 5 evenly-spaced stops
   const sorted = [...colors].sort((a, b) => {
     return (a.position.x * dir.x2 + a.position.y * dir.y2) - (b.position.x * dir.x2 + b.position.y * dir.y2)
   })
   const count = Math.min(sorted.length, 5)
-  const step = Math.floor(sorted.length / count)
+  const step = Math.max(1, Math.floor(sorted.length / count))
   const stops = Array.from({ length: count }, (_, i) => {
     const idx = Math.min(i * step, sorted.length - 1)
     return { offset: i / (count - 1), hex: rgbObjToHex(sorted[idx].color) }
   })
 
-  return `<linearGradient id="base-gradient" x1="${(dir.x1 * 100).toFixed(1)}%" y1="${(dir.y1 * 100).toFixed(1)}%" x2="${(dir.x2 * 100).toFixed(1)}%" y2="${(dir.y2 * 100).toFixed(1)}%">
+  // Convert normalized direction to absolute coords
+  const x1 = dir.x1 * w, y1 = dir.y1 * h, x2 = dir.x2 * w, y2 = dir.y2 * h
+
+  return `<linearGradient id="base-gradient" gradientUnits="userSpaceOnUse" x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" spreadMethod="pad">
       ${stops.map(s => `<stop offset="${(s.offset * 100).toFixed(1)}%" stop-color="${s.hex}" />`).join("\n      ")}
     </linearGradient>`
 }
+``
 
 // Linear gradient (kept for detail shapes)
 function shapeGradientDef(
@@ -590,19 +595,27 @@ function shapeGradientDef(
     colors.push({ x: cx, y: cy, hex: rgbObjToHex(c) })
   }
 
+  // Sort stops along global direction
   colors.sort((a, b) => (a.x * gDir.dx + a.y * gDir.dy) - (b.x * gDir.dx + b.y * gDir.dy))
 
-  const x1 = (50 - gDir.dx * 50 * consistency).toFixed(1)
-  const y1 = (50 - gDir.dy * 50 * consistency).toFixed(1)
-  const x2 = (50 + gDir.dx * 50 * consistency).toFixed(1)
-  const y2 = (50 + gDir.dy * 50 * consistency).toFixed(1)
+  // Build absolute start/end points along that direction across the triangle bbox
+  const minX = Math.min(...tri.points.map(p => p.x))
+  const maxX = Math.max(...tri.points.map(p => p.x))
+  const minY = Math.min(...tri.points.map(p => p.y))
+  const maxY = Math.max(...tri.points.map(p => p.y))
+  const cx = (minX + maxX) / 2, cy = (minY + maxY) / 2
+  const halfDiag = Math.hypot(maxX - minX, maxY - minY) * 0.6
+  const x1 = cx - gDir.dx * halfDiag * consistency
+  const y1 = cy - gDir.dy * halfDiag * consistency
+  const x2 = cx + gDir.dx * halfDiag * consistency
+  const y2 = cy + gDir.dy * halfDiag * consistency
 
   const stops = colors.map((c, i) => {
     const offset = (i / (colors.length - 1)) * 100
     return `<stop offset="${offset.toFixed(1)}%" stop-color="${c.hex}" />`
   }).join("\n        ")
 
-  return `<linearGradient id="${id}" x1="${x1}%" y1="${y1}%" x2="${x2}%" y2="${y2}%">
+  return `<linearGradient id="${id}" gradientUnits="userSpaceOnUse" x1="${x1.toFixed(2)}" y1="${y1.toFixed(2)}" x2="${x2.toFixed(2)}" y2="${y2.toFixed(2)}" spreadMethod="pad">
         ${stops}
       </linearGradient>`
 }
@@ -616,7 +629,7 @@ function shapeRadialDef(
   h?: number
 ): string {
   const cx = tri.centroid.x, cy = tri.centroid.y
-  const r = 1.15 * Math.max(...tri.points.map(p => Math.hypot(p.x - cx, p.y - cy)))
+  const r = 1.2 * Math.max(...tri.points.map(p => Math.hypot(p.x - cx, p.y - cy))) // a bit larger than triangle
 
   const centerRGB = ctx && w && h
     ? sampleRGB(ctx, clamp(cx, 0, w - 1), clamp(cy, 0, h - 1))
@@ -627,7 +640,7 @@ function shapeRadialDef(
   const eHex = rgbObjToHex(edgeRGB)
 
   return `
-    <radialGradient id="${id}" cx="${(cx / (w || 1) * 100).toFixed(2)}%" cy="${(cy / (h || 1) * 100).toFixed(2)}%" r="${r.toFixed(2)}">
+    <radialGradient id="${id}" gradientUnits="userSpaceOnUse" cx="${cx.toFixed(2)}" cy="${cy.toFixed(2)}" r="${r.toFixed(2)}" spreadMethod="pad">
       <stop offset="0%" stop-color="${cHex}" />
       <stop offset="100%" stop-color="${eHex}" />
     </radialGradient>
